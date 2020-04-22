@@ -40,6 +40,9 @@ pub mod gset;
 /// This module contains a Positive-Negative Counter.
 pub mod pncounter;
 
+/// This module contains a Bounded Counter
+pub mod bcounter;
+
 /// This module contains a Map with Reset-Remove and Observed-Remove semantics.
 pub mod map;
 
