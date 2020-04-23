@@ -1,10 +1,10 @@
 use crate::pncounter;
-use crate::traits::{Causal, CmRDT, CvRDT};
-use crate::{Actor, Dot, Error, Map, PNCounter, VClock};
+use crate::traits::{CmRDT, CvRDT};
+use crate::{Actor, Error, PNCounter};
 
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, LinkedList};
+use std::collections::BTreeMap;
 
 /// 'BCounter' is a counter with a bounded condition on the inner value.
 #[derive(Debug, PartialEq, Eq, Clone, Hash, Serialize, Deserialize)]
@@ -46,8 +46,7 @@ impl<A: Actor> CvRDT for BCounter<A> {
         // Merge the inner PNCounter
         self.inner.merge(other.inner);
 
-        // Apply Max Operation to the table
-        // TODO: improve efficiency here, too lazy right now
+        // Merge the transfers table by making a union, with a max(x) operation to resolve conflicts
         for ((other_tx, other_rx), other_v) in other.transfers.iter() {
             match self.transfers.get(&(other_tx.clone(), other_rx.clone())) {
                 Some(self_v) => {
@@ -120,7 +119,11 @@ impl<A: Actor> BCounter<A> {
     /// Transfers quota between actors
     pub fn transfer(&mut self, tx_actor: A, rx_actor: A, amount: u64) -> Result<(), Error> {
         if self.quota(tx_actor.clone()) >= BigInt::from(amount) {
-            match self.transfers.get(&(tx_actor.clone(), rx_actor.clone())) {
+            match self
+                .transfers
+                .clone()
+                .get(&(tx_actor.clone(), rx_actor.clone()))
+            {
                 Some(val) => {
                     self.transfers
                         .insert((tx_actor.clone(), rx_actor.clone()), val + amount);
