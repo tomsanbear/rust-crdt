@@ -84,9 +84,14 @@ impl<A: Actor> BCounter<A> {
 
     /// Generate an Op to decrement the counter.
     pub fn dec(&self, actor: A) -> Result<Op<A>, Error> {
-        Ok(Op {
-            inner: self.inner.dec(actor),
-        })
+        match self.quota(actor.clone()) > BigInt::from(0) {
+            true => Ok(Op {
+                inner: self.inner.dec(actor.clone()),
+            }),
+            false => Err(Error::OperationNotAllowed(
+                "Local quota will be exceeded".into(),
+            )),
+        }
     }
 
     /// Return the current value of this counter (P-N).
@@ -96,21 +101,40 @@ impl<A: Actor> BCounter<A> {
 
     /// Return the local quota avaialble to this node
     /// TODO: make private?
-    pub fn quota(&self, actor: &A) -> BigInt {
+    pub fn quota(&self, actor: A) -> BigInt {
         let mut out = self.inner.read();
         for ((tx, rx), v) in self
             .transfers
             .iter()
-            .filter(|((tx, rx), _)| tx == actor || rx == actor)
+            .filter(|((tx, rx), _)| *tx == actor || *rx == actor)
         {
-            match (tx == actor, rx == actor) {
+            match (*tx == actor, *rx == actor) {
                 (true, false) => out = out - v, // If we are the sender, subtract
                 (false, true) => out = out + v, // If we are the receiver, add
-                (true, true) => out = out + v,  // If we are both, add
                 _ => {}
             }
         }
         BigInt::from(out)
+    }
+
+    /// Transfers quota between actors
+    pub fn transfer(&mut self, tx_actor: A, rx_actor: A, amount: u64) -> Result<(), Error> {
+        if self.quota(tx_actor.clone()) >= BigInt::from(amount) {
+            match self.transfers.get(&(tx_actor.clone(), rx_actor.clone())) {
+                Some(val) => {
+                    self.transfers
+                        .insert((tx_actor.clone(), rx_actor.clone()), val + amount);
+                }
+                None => {
+                    self.transfers
+                        .insert((tx_actor.clone(), rx_actor.clone()), amount);
+                }
+            };
+            return Ok(());
+        }
+        Err(Error::OperationNotAllowed(
+            "cannot transfer more than local quota".into(),
+        ))
     }
 }
 
@@ -177,15 +201,45 @@ mod test {
         let mut sut_2 = BCounter::new();
         assert_eq!(sut_1.read(), 0.into());
         assert_eq!(sut_2.read(), 0.into());
+        assert!(sut_1.dec("A").is_err());
 
         sut_1.apply(sut_1.inc("A"));
         sut_1.apply(sut_1.inc("A"));
         sut_2.apply(sut_2.inc("B"));
         assert_eq!(sut_1.read(), 2.into());
+        assert_eq!(sut_1.quota("A"), 2.into());
         assert_eq!(sut_2.read(), 1.into());
+        assert_eq!(sut_2.quota("B"), 1.into());
+
+        sut_2.transfer("B", "A", 1).expect("should not fail");
+        assert_eq!(sut_2.quota("B"), 0.into());
+        assert_eq!(sut_1.quota("A"), 2.into());
 
         sut_2.merge(sut_1.clone());
         sut_1.merge(sut_2.clone());
+        assert_eq!(sut_1.quota("A"), 4.into());
+        assert_eq!(sut_2.quota("B"), 2.into());
         assert_eq!(sut_1, sut_2);
+
+        let mut done = false;
+        while !done {
+            let op = sut_1.dec("A");
+            if op.is_err() {
+                break;
+            }
+            sut_1.apply(op.unwrap());
+        }
+        done = false;
+        while !done {
+            let op = sut_2.dec("B");
+            if op.is_err() {
+                break;
+            }
+            sut_2.apply(op.unwrap());
+        }
+        assert_eq!(sut_1.quota("A"), 0.into());
+        assert_eq!(sut_2.quota("B"), 0.into());
+        assert_eq!(sut_1.read(), (-1).into());
+        assert_eq!(sut_2.read(), (1).into());
     }
 }
